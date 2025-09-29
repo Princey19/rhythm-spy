@@ -4,11 +4,13 @@ import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 
 interface FileUploadProps {
-  onFileSelect: (file: File) => void;
+  onFileSelect?: (file: File) => void;
+  onFilesSelect?: (files: File[]) => void;
   acceptedTypes: string[];
+  allowMultiple?: boolean;
 }
 
-export const FileUpload = ({ onFileSelect, acceptedTypes }: FileUploadProps) => {
+export const FileUpload = ({ onFileSelect, onFilesSelect, acceptedTypes, allowMultiple = false }: FileUploadProps) => {
   const [isDragging, setIsDragging] = useState(false);
   const { toast } = useToast();
 
@@ -32,62 +34,126 @@ export const FileUpload = ({ onFileSelect, acceptedTypes }: FileUploadProps) => 
     setIsDragging(false);
     
     const files = Array.from(e.dataTransfer.files);
-    const file = files[0];
     
-    if (!file) return;
-    
-    if (!validateFile(file)) {
-      toast({
-        title: "Invalid file type",
-        description: `Please select a valid audio or video file. Supported formats: ${acceptedTypes.join(', ')}`,
-        variant: "destructive",
-      });
-      return;
-    }
+    if (files.length === 0) return;
 
-    if (file.size > 100 * 1024 * 1024) { // 100MB limit
-      toast({
-        title: "File too large",
-        description: "Please select a file smaller than 100MB",
-        variant: "destructive",
-      });
-      return;
-    }
+    if (allowMultiple) {
+      const validFiles = files.filter(validateFile);
+      const oversizedFiles = validFiles.filter(file => file.size > 100 * 1024 * 1024);
+      const processableFiles = validFiles.filter(file => file.size <= 100 * 1024 * 1024);
+      
+      if (validFiles.length < files.length) {
+        toast({
+          title: "Some files skipped",
+          description: `${files.length - validFiles.length} files were invalid. Supported formats: ${acceptedTypes.join(', ')}`,
+          variant: "destructive",
+        });
+      }
+      
+      if (oversizedFiles.length > 0) {
+        toast({
+          title: "Some files too large",
+          description: `${oversizedFiles.length} files were over 100MB and skipped`,
+          variant: "destructive",
+        });
+      }
+      
+      if (processableFiles.length > 0) {
+        onFilesSelect?.(processableFiles);
+        toast({
+          title: "Files uploaded successfully",
+          description: `${processableFiles.length} files ready for batch analysis`,
+        });
+      }
+    } else {
+      const file = files[0];
+      
+      if (!validateFile(file)) {
+        toast({
+          title: "Invalid file type",
+          description: `Please select a valid audio or video file. Supported formats: ${acceptedTypes.join(', ')}`,
+          variant: "destructive",
+        });
+        return;
+      }
 
-    onFileSelect(file);
-    toast({
-      title: "File uploaded successfully",
-      description: `${file.name} is ready for analysis`,
-    });
-  }, [acceptedTypes, onFileSelect, toast]);
+      if (file.size > 100 * 1024 * 1024) {
+        toast({
+          title: "File too large",
+          description: "Please select a file smaller than 100MB",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      onFileSelect?.(file);
+      toast({
+        title: "File uploaded successfully",
+        description: `${file.name} is ready for analysis`,
+      });
+    }
+  }, [acceptedTypes, onFileSelect, onFilesSelect, allowMultiple, toast]);
 
   const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
 
-    if (!validateFile(file)) {
+    if (allowMultiple) {
+      const fileArray = Array.from(files);
+      const validFiles = fileArray.filter(validateFile);
+      const oversizedFiles = validFiles.filter(file => file.size > 100 * 1024 * 1024);
+      const processableFiles = validFiles.filter(file => file.size <= 100 * 1024 * 1024);
+      
+      if (validFiles.length < fileArray.length) {
+        toast({
+          title: "Some files skipped",
+          description: `${fileArray.length - validFiles.length} files were invalid. Supported formats: ${acceptedTypes.join(', ')}`,
+          variant: "destructive",
+        });
+      }
+      
+      if (oversizedFiles.length > 0) {
+        toast({
+          title: "Some files too large",
+          description: `${oversizedFiles.length} files were over 100MB and skipped`,
+          variant: "destructive",
+        });
+      }
+      
+      if (processableFiles.length > 0) {
+        onFilesSelect?.(processableFiles);
+        toast({
+          title: "Files uploaded successfully",
+          description: `${processableFiles.length} files ready for batch analysis`,
+        });
+      }
+    } else {
+      const file = files[0];
+      
+      if (!validateFile(file)) {
+        toast({
+          title: "Invalid file type",
+          description: `Please select a valid audio or video file. Supported formats: ${acceptedTypes.join(', ')}`,
+          variant: "destructive",
+        });
+        return;
+      }
+
+      if (file.size > 100 * 1024 * 1024) {
+        toast({
+          title: "File too large", 
+          description: "Please select a file smaller than 100MB",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      onFileSelect?.(file);
       toast({
-        title: "Invalid file type",
-        description: `Please select a valid audio or video file. Supported formats: ${acceptedTypes.join(', ')}`,
-        variant: "destructive",
+        title: "File uploaded successfully",
+        description: `${file.name} is ready for analysis`,
       });
-      return;
     }
-
-    if (file.size > 100 * 1024 * 1024) {
-      toast({
-        title: "File too large", 
-        description: "Please select a file smaller than 100MB",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    onFileSelect(file);
-    toast({
-      title: "File uploaded successfully",
-      description: `${file.name} is ready for analysis`,
-    });
   };
 
   const isAudioFile = (filename: string) => {
@@ -117,10 +183,10 @@ export const FileUpload = ({ onFileSelect, acceptedTypes }: FileUploadProps) => 
           
           <div className="space-y-2">
             <h3 className="text-lg font-medium text-foreground">
-              Drop your audio or video file here
+              {allowMultiple ? "Drop your audio or video files here" : "Drop your audio or video file here"}
             </h3>
             <p className="text-sm text-muted-foreground">
-              Or click to browse and select a file
+              {allowMultiple ? "Or click to browse and select multiple files" : "Or click to browse and select a file"}
             </p>
           </div>
 
@@ -144,12 +210,13 @@ export const FileUpload = ({ onFileSelect, acceptedTypes }: FileUploadProps) => 
           className="border-primary/20 hover:border-primary hover:bg-primary/10"
         >
           <Upload className="w-4 h-4 mr-2" />
-          Choose File
+          {allowMultiple ? "Choose Files" : "Choose File"}
         </Button>
         <input
           id="file-input"
           type="file"
           accept={acceptedTypes.join(',')}
+          multiple={allowMultiple}
           onChange={handleFileInput}
           className="hidden"
         />
