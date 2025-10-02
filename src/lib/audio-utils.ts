@@ -19,8 +19,11 @@ export const analyzeBPM = async (audioUrl: string): Promise<number> => {
     const channelData = audioBuffer.getChannelData(0);
     const sampleRate = audioBuffer.sampleRate;
     
-    // Analyze beats using onset detection
-    const bpm = detectBPM(channelData, sampleRate);
+    // Normalize audio data for consistency
+    const normalizedData = normalizeAudio(channelData);
+    
+    // Analyze beats using improved onset detection
+    const bpm = detectBPM(normalizedData, sampleRate);
     
     await audioContext.close();
     
@@ -29,6 +32,28 @@ export const analyzeBPM = async (audioUrl: string): Promise<number> => {
     console.error('Error analyzing BPM:', error);
     throw new Error('Failed to analyze BPM');
   }
+};
+
+const normalizeAudio = (audioData: Float32Array): Float32Array => {
+  // Find the maximum absolute value
+  let maxVal = 0;
+  for (let i = 0; i < audioData.length; i++) {
+    const absVal = Math.abs(audioData[i]);
+    if (absVal > maxVal) {
+      maxVal = absVal;
+    }
+  }
+  
+  // Normalize to [-1, 1] range
+  if (maxVal > 0) {
+    const normalized = new Float32Array(audioData.length);
+    for (let i = 0; i < audioData.length; i++) {
+      normalized[i] = audioData[i] / maxVal;
+    }
+    return normalized;
+  }
+  
+  return audioData;
 };
 
 const detectBPM = (audioData: Float32Array, sampleRate: number): number => {
@@ -41,10 +66,34 @@ const detectBPM = (audioData: Float32Array, sampleRate: number): number => {
   // Calculate onset detection function
   const onsets = calculateOnsets(audioData, sampleRate, windowSize, hopSize);
   
-  // Find tempo using autocorrelation
-  const bpm = findTempo(onsets, sampleRate, hopSize, minBPM, maxBPM);
+  // Apply median filtering to reduce noise
+  const filteredOnsets = medianFilter(onsets, 3);
   
-  return bpm;
+  // Analyze multiple segments and find most stable BPM
+  const bpm = findStableTempo(filteredOnsets, sampleRate, hopSize, minBPM, maxBPM);
+  
+  return Math.round(bpm);
+};
+
+const medianFilter = (data: number[], windowSize: number): number[] => {
+  const filtered: number[] = [];
+  const halfWindow = Math.floor(windowSize / 2);
+  
+  for (let i = 0; i < data.length; i++) {
+    const window: number[] = [];
+    
+    for (let j = -halfWindow; j <= halfWindow; j++) {
+      const index = i + j;
+      if (index >= 0 && index < data.length) {
+        window.push(data[index]);
+      }
+    }
+    
+    window.sort((a, b) => a - b);
+    filtered.push(window[Math.floor(window.length / 2)]);
+  }
+  
+  return filtered;
 };
 
 const calculateOnsets = (
@@ -88,6 +137,45 @@ const calculateSpectralFlux = (window: Float32Array): number => {
   return Math.sqrt(energy / window.length);
 };
 
+const findStableTempo = (
+  onsets: number[], 
+  sampleRate: number, 
+  hopSize: number, 
+  minBPM: number, 
+  maxBPM: number
+): number => {
+  // Analyze multiple segments of the audio
+  const segmentSize = Math.floor(onsets.length / 4);
+  const bpmCandidates: number[] = [];
+  
+  for (let i = 0; i < 4; i++) {
+    const start = i * segmentSize;
+    const end = Math.min(start + segmentSize * 2, onsets.length); // Overlapping segments
+    const segment = onsets.slice(start, end);
+    
+    const bpm = findTempo(segment, sampleRate, hopSize, minBPM, maxBPM);
+    bpmCandidates.push(bpm);
+  }
+  
+  // Find the most stable BPM (mode of candidates)
+  const bpmCounts = new Map<number, number>();
+  for (const bpm of bpmCandidates) {
+    bpmCounts.set(bpm, (bpmCounts.get(bpm) || 0) + 1);
+  }
+  
+  let maxCount = 0;
+  let stableBPM = bpmCandidates[0];
+  
+  for (const [bpm, count] of bpmCounts.entries()) {
+    if (count > maxCount) {
+      maxCount = count;
+      stableBPM = bpm;
+    }
+  }
+  
+  return stableBPM;
+};
+
 const findTempo = (
   onsets: number[], 
   sampleRate: number, 
@@ -120,7 +208,22 @@ const findTempo = (
 
 const pickPeaks = (data: number[]): number[] => {
   const peaks: number[] = [];
-  const threshold = Math.max(...data) * 0.3; // Adaptive threshold
+  
+  // Calculate mean and standard deviation for consistent threshold
+  let sum = 0;
+  for (let i = 0; i < data.length; i++) {
+    sum += data[i];
+  }
+  const mean = sum / data.length;
+  
+  let variance = 0;
+  for (let i = 0; i < data.length; i++) {
+    variance += Math.pow(data[i] - mean, 2);
+  }
+  const stdDev = Math.sqrt(variance / data.length);
+  
+  // Use consistent threshold based on statistics
+  const threshold = mean + stdDev * 1.5;
   
   for (let i = 1; i < data.length - 1; i++) {
     if (data[i] > data[i - 1] && 
@@ -140,22 +243,13 @@ const createIntervalHistogram = (
 ): Map<number, number> => {
   const histogram = new Map<number, number>();
   
+  // Group BPM values into bins of 2 for better clustering
   for (const interval of intervals) {
-    const bpm = Math.round(60 / interval);
-    if (bpm >= minBPM && bpm <= maxBPM) {
-      histogram.set(bpm, (histogram.get(bpm) || 0) + 1);
-      
-      // Also check for half-time and double-time
-      const halfTime = Math.round(bpm / 2);
-      const doubleTime = Math.round(bpm * 2);
-      
-      if (halfTime >= minBPM && halfTime <= maxBPM) {
-        histogram.set(halfTime, (histogram.get(halfTime) || 0) + 0.5);
-      }
-      
-      if (doubleTime >= minBPM && doubleTime <= maxBPM) {
-        histogram.set(doubleTime, (histogram.get(doubleTime) || 0) + 0.5);
-      }
+    const bpm = 60 / interval;
+    const roundedBPM = Math.round(bpm / 2) * 2; // Round to nearest even number
+    
+    if (roundedBPM >= minBPM && roundedBPM <= maxBPM) {
+      histogram.set(roundedBPM, (histogram.get(roundedBPM) || 0) + 1);
     }
   }
   
